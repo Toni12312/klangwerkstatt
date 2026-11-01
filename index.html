@@ -126,6 +126,12 @@ button:disabled{opacity:.4;cursor:default}
 .instsel{display:flex;align-items:center;gap:6px;font-size:.82rem;font-weight:800;color:var(--muted)}
 .instsel select{width:auto;padding:6px 8px;font-size:.9rem;color:var(--ink)}
 .inststat{font-size:.78rem;font-weight:700;color:var(--muted)}
+.instmenu{position:fixed;z-index:55;min-width:190px;background:var(--surface);color:var(--ink);border-radius:16px;padding:8px;
+  border:3px solid var(--c);box-shadow:0 14px 34px rgba(0,0,0,.28);display:flex;flex-direction:column;gap:4px}
+.instmenu .imhead{font-size:.75rem;font-weight:800;color:var(--muted);padding:2px 8px 4px;letter-spacing:.03em}
+.instmenu button{text-align:left;padding:12px 14px;font-size:1rem;background:transparent}
+.instmenu button[aria-checked="true"]{background:color-mix(in srgb,var(--c) 18%,var(--surface));}
+.instmenu button[aria-checked="true"]::after{content:" ✓";color:var(--c)}
 .modal{position:fixed;inset:0;background:rgba(10,12,20,.45);display:grid;place-items:center;z-index:50;
   padding:max(16px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) max(16px,env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
 .dlg{background:var(--surface);color:var(--ink);border-radius:18px;padding:20px;max-width:420px;width:100%;display:flex;flex-direction:column;gap:12px;box-shadow:0 20px 50px rgba(0,0,0,.3)}
@@ -240,7 +246,7 @@ html.app .transport .logo{width:42px;height:42px}
     grid-template-areas:"tp tp" "trk ed" "lied ed" "pat ed" "set arr";grid-template-rows:auto auto auto auto 1fr;gap:8px 12px}
   html.app .panel{padding:10px}
   html.app .trk{padding:6px 4px}
-  html.app .trk small{display:none}
+  html.app .trk small{font-size:.68rem}
   html.app .cell{height:28px}
   html.app .pad{height:52px}
   html.app .ov .lab{font-size:.78rem;gap:4px}
@@ -348,6 +354,7 @@ html.app .transport .logo{width:42px;height:42px}
     <div class="pads" id="pads"></div>
   </section>
 
+  <div class="instmenu" id="instMenu" role="menu" hidden></div>
   <div class="modal" id="modal" hidden>
     <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
       <h2 id="dlgTitle">Takte einfügen</h2>
@@ -906,7 +913,7 @@ function renderTransport(){
 }
 function renderTracks(){
   $("tracks").innerHTML = TRACKS.map((tr,i) =>
-    `<button class="trk" style="--c:${col(i)}" data-t="${i}" aria-pressed="${ui.track===i}"><span class="dot"></span>${tr.name}<small>${tr.sub} · Taste ${i+1}</small></button>`).join("");
+    `<button class="trk" style="--c:${col(i)}" data-t="${i}" aria-pressed="${ui.track===i}" title="Lange drücken: Instrument wählen"><span class="dot"></span>${tr.name}<small>${ui.sound==="midi" ? tr.sub+" · Taste "+(i+1) : instLabel(i)}</small></button>`).join("");
 }
 function renderOverview(){
   $("ov").style.gridTemplateColumns = APP ? `118px repeat(${BARS},minmax(22px,1fr))` : `150px repeat(${BARS},minmax(26px,1fr))`;
@@ -1154,7 +1161,43 @@ $("mSong").onclick = () => setMode("song");
 $("mArr").onclick = () => { if (!song.arr.length) msgArr(); setMode("arr"); };
 $("btnMetro").onclick = () => { ui.metro=!ui.metro; renderTransport(); };
 $("btnUndo").onclick = undo;
-$("tracks").onclick = e => { const b=e.target.closest("[data-t]"); if (b) selectTrack(+b.dataset.t); };
+let pressTimer=null, longDone=false;
+$("tracks").onclick = e => {
+  const b=e.target.closest("[data-t]"); if (!b) return;
+  if (longDone){ longDone=false; return; }
+  selectTrack(+b.dataset.t);
+};
+/* Langer Druck (oder Rechtsklick) auf eine Spur: Instrument auswählen */
+$("tracks").addEventListener("pointerdown", e => {
+  const b=e.target.closest("[data-t]"); if (!b) return;
+  longDone=false; clearTimeout(pressTimer);
+  pressTimer=setTimeout(() => { longDone=true; openInstMenu(+b.dataset.t, b); }, 480);
+});
+["pointerup","pointercancel","pointerleave"].forEach(ev => $("tracks").addEventListener(ev, () => clearTimeout(pressTimer)));
+$("tracks").addEventListener("contextmenu", e => {
+  const b=e.target.closest("[data-t]"); if (!b) return;
+  e.preventDefault(); clearTimeout(pressTimer);
+  if ($("instMenu").hidden || $("instMenu").dataset.t!==b.dataset.t){ longDone = e.pointerType!=="mouse"; openInstMenu(+b.dataset.t, b); }
+});
+function openInstMenu(t, btn){
+  if (ui.sound==="midi") return;
+  const m=$("instMenu"), r=btn.getBoundingClientRect();
+  m.dataset.t=t; m.style.setProperty("--c", col(t));
+  m.innerHTML = `<div class="imhead">${TRACKS[t].name}: Instrument</div>` + INSTRUMENTS[t].map(([v,l]) =>
+    `<button role="menuitemradio" aria-checked="${instOf(t)===v}" data-inst="${v}">${l}</button>`).join("");
+  m.hidden=false;
+  const w=m.offsetWidth, x=Math.min(Math.max(8, r.left + r.width/2 - w/2), window.innerWidth - w - 8);
+  m.style.left=x+"px"; m.style.top=(r.bottom+6)+"px";
+  if (navigator.vibrate) try { navigator.vibrate(15); } catch(_){}
+}
+function closeInstMenu(){ $("instMenu").hidden=true; }
+$("instMenu").addEventListener("click", e => {
+  const b=e.target.closest("[data-inst]"); if (!b) return;
+  const t=+$("instMenu").dataset.t;
+  song.sounds[t]=b.dataset.inst; loadInstrument(b.dataset.inst); predecode(); persist();
+  closeInstMenu(); selectTrack(t);
+});
+document.addEventListener("pointerdown", e => { if (!$("instMenu").hidden && !e.target.closest("#instMenu,#tracks")) closeInstMenu(); });
 $("ov").onclick = e => {
   const m=e.target.closest("[data-mute]");
   if (m){ const tr=song.tracks[+m.dataset.mute]; tr.mute=!tr.mute; allNotesOff(); renderOverview(); persist(); return; }
@@ -1300,6 +1343,7 @@ padsEl.addEventListener("pointerdown", e => { const b=e.target.closest("[data-pa
 
 document.addEventListener("keydown", e => {
   if (!$("modal").hidden){ if (e.code==="Escape") closeDlg(); return; }
+  if (!$("instMenu").hidden && e.code==="Escape"){ closeInstMenu(); return; }
   if (e.target.closest("input,select")) return;
   if ((e.ctrlKey||e.metaKey) && e.code==="KeyZ"){ e.preventDefault(); undo(); return; }
   if ((e.ctrlKey||e.metaKey) && e.code==="KeyC"){
@@ -1473,7 +1517,7 @@ function syncSettings(){
 }
 $("selKey").onchange = e => { song.key=+e.target.value; changed(); predecode(); };
 $("selScale").onchange = e => { song.scale=e.target.value; changed(); predecode(); };
-$("selInst").onchange = e => { song.sounds[ui.track]=e.target.value; loadInstrument(e.target.value); predecode(); renderInstStatus(); persist(); };
+$("selInst").onchange = e => { song.sounds[ui.track]=e.target.value; loadInstrument(e.target.value); predecode(); renderInstStatus(); renderTracks(); persist(); };
 $("selSound").onchange = e => {
   allNotesOff(); ui.sound=e.target.value; localSet("sound", ui.sound);
   if (ui.sound==="midi" && !midi) initMidi();

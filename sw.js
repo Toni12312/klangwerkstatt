@@ -1,5 +1,5 @@
 /* Klangwerkstatt: läuft auch ohne Internet. Version wird bei jedem Bau neu gesetzt. */
-const CACHE = "klangwerkstatt-122a5cdd";
+const CACHE = "klangwerkstatt-3490b832";
 const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
