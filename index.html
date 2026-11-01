@@ -123,6 +123,9 @@ button:disabled{opacity:.4;cursor:default}
 #edPanel.patmode{border:3px dashed var(--c)}
 .patname{font:inherit;font-family:var(--display);font-weight:700;font-size:1rem;width:11em;max-width:45vw;padding:2px 8px;border-radius:8px;border:1px solid var(--line);background:var(--surface)}
 .primarybtn{background:var(--play);color:#fff;padding:5px 12px;font-size:.85rem}
+.instsel{display:flex;align-items:center;gap:6px;font-size:.82rem;font-weight:800;color:var(--muted)}
+.instsel select{width:auto;padding:6px 8px;font-size:.9rem;color:var(--ink)}
+.inststat{font-size:.78rem;font-weight:700;color:var(--muted)}
 .modal{position:fixed;inset:0;background:rgba(10,12,20,.45);display:grid;place-items:center;z-index:50;
   padding:max(16px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) max(16px,env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
 .dlg{background:var(--surface);color:var(--ink);border-radius:18px;padding:20px;max-width:420px;width:100%;display:flex;flex-direction:column;gap:12px;box-shadow:0 20px 50px rgba(0,0,0,.3)}
@@ -310,6 +313,8 @@ html.app .transport .logo{width:42px;height:42px}
   <section class="panel" id="edPanel" aria-label="Takt bearbeiten">
     <div class="edhead">
       <h2 id="edTitle"></h2>
+      <label class="instsel midi-hide">Klang
+        <select id="selInst"></select><span id="instStat" class="inststat"></span></label>
       <div class="tools">
         <button class="toggle" id="bSel" aria-pressed="false" title="Rahmen um Noten ziehen (oder Umschalt gedrückt halten)">Markieren</button>
         <button id="bCopy">Kopieren</button>
@@ -388,6 +393,7 @@ html.app .transport .logo{width:42px;height:42px}
       <button id="bMidiRetry" class="midi-only">MIDI neu suchen</button>
     </div>
     <div class="msg" id="msg"></div>
+    <p class="hint">Instrumentklänge: FluidR3 GM SoundFont von Frank Wen (Lizenz CC BY 3.0), bereitgestellt über „midi-js-soundfonts“ von Benjamin Gleitzman. Schlagzeug: Pearl Master Studio Pack 1 von enoe (Lizenz CC BY 3.0), bereitgestellt über „oramics/sampled“. Jedes Instrument wird beim ersten Gebrauch einmal aus dem Internet geladen (etwa 1 MB) und danach gespeichert.</p>
     <div class="help midi-only">
       <h2 style="margin-top:18px">So spielen deine Arturia-Klänge</h2>
       <ol>
@@ -406,7 +412,8 @@ html.app .transport .logo{width:42px;height:42px}
 (() => {
 "use strict";
 const APP = document.documentElement.classList.contains("app");   /* Tablet-App: nur Touch, eingebaute Klänge */
-const STEPS = 32, BARS = 16; /* 32 Ticks = 1/32-Noten pro Takt */
+const STEPS = 32, BARS = 16;
+const DEFAULT_SOUNDS = ["pearl","electric_bass_finger","acoustic_grand_piano","trumpet"]; /* 32 Ticks = 1/32-Noten pro Takt */
 const TRACKS = [
   {id:"drums", name:"Schlagzeug", sub:"Rhythmus"},
   {id:"bass", name:"Bass", sub:"tiefe Töne"},
@@ -451,6 +458,8 @@ function loadSong(){
 }
 function migrate(j){
   if (j && !Array.isArray(j.arr)) j.arr=[];
+  if (j && !Array.isArray(j.sounds)) j.sounds=[...DEFAULT_SOUNDS];
+  if (j && j.soundsV!==2){ if (j.sounds[0]==="intern") j.sounds[0]="pearl"; j.soundsV=2; }
   if (j && !Array.isArray(j.pbank)){   /* 4 Instrumente × 8 Pattern-Plätze; alte Pattern-Liste übernehmen */
     j.pbank=[0,1,2,3].map(()=>Array.from({length:8},()=>[]));
     (j.patterns||[]).forEach(pt => { const row=j.pbank[pt.track], k=row.findIndex(x=>!x.length); if (k>=0) row[k]=pt.notes; });
@@ -519,15 +528,23 @@ function rowForMidi(t, n){
 
 /* ---------- audio ---------- */
 let ctx=null, master=null, noiseBuf=null;
+function makeCtx(){
+  if (ctx) return;
+  ctx = new (window.AudioContext||window.webkitAudioContext)();
+  const comp = ctx.createDynamicsCompressor();
+  master = ctx.createGain(); master.gain.value = .8;
+  master.connect(comp); comp.connect(ctx.destination);
+  /* Hall: kurzer, weicher Raum, damit alles voller klingt */
+  const len = Math.floor(ctx.sampleRate*1.8), ir = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let c=0;c<2;c++){ const d=ir.getChannelData(c); for (let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len, 3); }
+  const verb = ctx.createConvolver(); verb.buffer = ir;
+  const send = ctx.createGain(); send.gain.value = .22;
+  master.connect(send); send.connect(verb); verb.connect(comp);
+  noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+  const d = noiseBuf.getChannelData(0); for (let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+}
 function ensureAudio(){
-  if (!ctx){
-    ctx = new (window.AudioContext||window.webkitAudioContext)();
-    const comp = ctx.createDynamicsCompressor();
-    master = ctx.createGain(); master.gain.value = .8;
-    master.connect(comp); comp.connect(ctx.destination);
-    noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
-    const d = noiseBuf.getChannelData(0); for (let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
-  }
+  makeCtx();
   if (ctx.state==="suspended") ctx.resume();
 }
 const mtof = n => 440*Math.pow(2,(n-69)/12);
@@ -563,6 +580,103 @@ function voice(t, n, time, v){
   let stopped=false;
   return { stop(at){ if (stopped) return; stopped=true; at=Math.max(at, ctx.currentTime); g.gain.setTargetAtTime(0, at, rel/3); oscs.forEach(o => o.stop(at+rel+.1)); } };
 }
+/* ---------- echte Instrumente (Aufnahmen) ---------- */
+const INSTRUMENTS = {
+  0: [["pearl","Akustik-Schlagzeug"],["intern","Elektro-Schlagzeug"]],
+  1: [["electric_bass_finger","E-Bass"],["acoustic_bass","Kontrabass"],["intern","Synth-Bass"]],
+  2: [["acoustic_grand_piano","Klavier"],["electric_piano_1","E-Piano"],["acoustic_guitar_nylon","Gitarre"],["intern","Synth-Fläche"]],
+  3: [["trumpet","Trompete"],["clarinet","Klarinette"],["flute","Flöte"],["glockenspiel","Glockenspiel"],["intern","Synth"]]
+};
+const SF_BASE = "https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/";
+const TRACK_GAIN = [1, 1, .7, .8];
+const RELEASE = {acoustic_grand_piano:.35, electric_piano_1:.3, acoustic_guitar_nylon:.3, glockenspiel:.6};
+const bank = {};   /* name -> {status, raw:{midi:base64}, buf:{midi:AudioBuffer}, dec:{midi:Promise}} */
+const instOf = t => (song.sounds && song.sounds[t]) || "intern";
+function noteNameToMidi(nm){
+  const m=/^([A-G])(b?)(-?\d)$/.exec(nm); if (!m) return null;
+  const pc={C:0,D:2,E:4,F:5,G:7,A:9,B:11}[m[1]] - (m[2]?1:0);
+  return 12*(+m[3]+1)+pc;
+}
+/* Echtes Schlagzeug: Pearl Master Studio Pack 1 von enoe (CC BY 3.0), über oramics/sampled */
+const DRUMKITS = {
+  pearl: {base:"https://oramics.github.io/sampled/DRUMS/pearl-master-studio/samples/",
+    map:{36:"kick-01.wav", 38:"snare-01.wav", 42:"hihat-closed.wav", 46:"hihat-open.wav", 45:"tom-03.wav", 50:"tom-01.wav", 49:"crash-01.wav"}}
+};
+function loadDrumKit(name){
+  const kit=DRUMKITS[name], b = bank[name] = {status:"loading", raw:{}, buf:{}, dec:{}};
+  renderInstStatus(); makeCtx();
+  Promise.all(Object.entries(kit.map).map(([n,file]) =>
+    fetch(kit.base+file).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); })
+      .then(ab => ctx.decodeAudioData(ab)).then(buf => { b.buf[n]=buf; })
+  )).then(() => { b.status="ready"; renderInstStatus(); })
+    .catch(() => { b.status = Object.keys(b.buf).length ? "ready" : "error"; renderInstStatus(); });
+}
+/* Spielt den Schlag mit dem echten Schlagzeug, sonst mit dem eingebauten (z. B. Klatschen) */
+function playDrum(n, time, v){
+  const b=bank[instOf(0)];
+  if (instOf(0)!=="intern" && b && b.status==="ready" && b.buf[n]){
+    const src=ctx.createBufferSource(), g=ctx.createGain();
+    src.buffer=b.buf[n]; g.gain.value=v*TRACK_GAIN[0]; src.connect(g); g.connect(master); src.start(time);
+    return;
+  }
+  drum(n, time, v);
+}
+function loadInstrument(name){
+  if (name==="intern" || bank[name]) return;
+  if (DRUMKITS[name]) return loadDrumKit(name);
+  const b = bank[name] = {status:"loading", raw:{}, buf:{}, dec:{}};
+  renderInstStatus();
+  fetch(SF_BASE+name+"-mp3.js").then(r => { if (!r.ok) throw 0; return r.text(); }).then(txt => {
+    const re=/"([A-G]b?-?\d)":\s*"data:audio\/mp3;base64,([^"]+)"/g; let m;
+    while ((m=re.exec(txt))){ const n=noteNameToMidi(m[1]); if (n!=null) b.raw[n]=m[2]; }
+    if (!Object.keys(b.raw).length) throw 0;
+    b.status="ready"; predecode(); renderInstStatus();
+  }).catch(() => { b.status="error"; renderInstStatus(); });
+}
+function decodeNote(name, n){
+  const b=bank[name]; if (!b || b.status!=="ready" || b.buf[n] || b.dec[n] || !b.raw[n]) return;
+  makeCtx();
+  const bin=atob(b.raw[n]), arr=new Uint8Array(bin.length);
+  for (let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+  b.dec[n]=ctx.decodeAudioData(arr.buffer).then(buf => { b.buf[n]=buf; }).catch(()=>{});
+}
+function predecode(){   /* die Töne vorbereiten, die die Spuren gerade brauchen */
+  for (let t=1;t<4;t++){ const nm=instOf(t); if (bank[nm] && bank[nm].status==="ready") rowsFor(t).forEach(r => r.notes.forEach(n => decodeNote(nm,n))); }
+}
+function loadAllInstruments(){ for (let t=0;t<4;t++) loadInstrument(instOf(t)); predecode(); }
+function sampleVoice(t, buf, rel, time, v){
+  const src=ctx.createBufferSource(), g=ctx.createGain();
+  src.buffer=buf; src.connect(g); g.connect(master);
+  const peak=v*TRACK_GAIN[t];
+  g.gain.setValueAtTime(0,time); g.gain.linearRampToValueAtTime(peak,time+.006);
+  src.start(time);
+  let stopped=false;
+  return { stop(at){ if (stopped) return; stopped=true; at=Math.max(at, ctx.currentTime); g.gain.setTargetAtTime(0, at, rel/3); src.stop(at+rel+.2); } };
+}
+/* Spielt mit dem echten Instrument, sobald es geladen ist, sonst mit dem eingebauten Klang */
+function anyVoice(t, n, time, v){
+  const nm=instOf(t), b=bank[nm];
+  if (nm!=="intern" && b && b.status==="ready"){
+    if (b.buf[n]) return sampleVoice(t, b.buf[n], RELEASE[nm]||.12, time, v);
+    decodeNote(nm, n);
+  }
+  return voice(t, n, time, v);
+}
+function instLabel(t){ const o=INSTRUMENTS[t].find(x=>x[0]===instOf(t)); return o?o[1]:""; }
+function renderInst(){
+  const sel=$("selInst"), t=ui.track;
+  sel.innerHTML = INSTRUMENTS[t].map(([v,l]) => `<option value="${v}">${l}</option>`).join("");
+  sel.value = instOf(t); sel.disabled = INSTRUMENTS[t].length<2;
+  renderInstStatus();
+}
+function renderInstStatus(){
+  const el=$("instStat"); if (!el) return;
+  const nm=instOf(ui.track), b=bank[nm];
+  if (nm==="intern" || ui.sound==="midi"){ el.textContent=""; return; }
+  el.textContent = !b ? "" : b.status==="loading" ? "lädt …" : b.status==="error" ? "nicht erreichbar, spielt eingebauten Klang" : "";
+  el.className = "inststat" + (b && b.status==="error" ? " warn" : "");
+}
+
 function click(t, accent){
   const o=ctx.createOscillator(), g=ctx.createGain(); o.frequency.value = accent?1700:1150; o.connect(g); g.connect(ctx.destination);
   env(g,t,accent?.3:.18,.04); o.start(t); o.stop(t+.06);
@@ -627,8 +741,8 @@ function playScheduled(t, r, time, dur, vel){
   const row = rowsFor(t)[r]; if (!row) return;
   if (ui.sound==="midi") return midiSend(t, row.notes, time, dur, vel);
   const v=vel/127;
-  if (t===0) return drum(row.notes[0], time, v);
-  row.notes.forEach(n => voice(t,n,time,v).stop(time+dur*.95));
+  if (t===0) return playDrum(row.notes[0], time, v);
+  row.notes.forEach(n => anyVoice(t,n,time,v).stop(time+dur*.95));
 }
 const held = {};
 function inputOn(key, t, r, vel=100){
@@ -638,8 +752,8 @@ function inputOn(key, t, r, vel=100){
   const row = rowsFor(t)[r]; if (!row) return;
   const now = ctx.currentTime, h = {t, r, notes:row.notes, voices:[]};
   if (ui.sound==="midi") midiSend(t, row.notes, now, null, vel);
-  else if (t===0) drum(row.notes[0], now, vel/127);
-  else h.voices = row.notes.map(n => voice(t,n,now,vel/127));
+  else if (t===0) playDrum(row.notes[0], now, vel/127);
+  else h.voices = row.notes.map(n => anyVoice(t,n,now,vel/127));
   flashPad(t, r, true);
   if (rec.on && play.on){
     const e = nearest(now);
@@ -830,7 +944,7 @@ function renderGrid(fresh){
   renderNotes(fresh);
   $("steps").style.gridTemplateColumns = `repeat(${cols},1fr)`;
   $("steps").innerHTML = Array.from({length:cols},(_,c)=>{ const s=c*ui.res; return `<span>${s%8===0?s/8+1:(ui.res<2&&s%2?"":"·")}</span>`; }).join("");
-  renderPads();
+  renderPads(); renderInst();
 }
 function renderNotes(fresh){
   const t=ui.track, n=rowsFor(t).length, rh=rowH();
@@ -1357,8 +1471,9 @@ function syncSettings(){
   $("selKey").value=song.key; $("selScale").value=song.scale; $("selSound").value=ui.sound;
   $("chans").innerHTML = TRACKS.map((tr,i) => `<label>${tr.name}<input type="number" id="ch${i}" min="1" max="16" value="${song.chans[i]}"></label>`).join("");
 }
-$("selKey").onchange = e => { song.key=+e.target.value; changed(); };
-$("selScale").onchange = e => { song.scale=e.target.value; changed(); };
+$("selKey").onchange = e => { song.key=+e.target.value; changed(); predecode(); };
+$("selScale").onchange = e => { song.scale=e.target.value; changed(); predecode(); };
+$("selInst").onchange = e => { song.sounds[ui.track]=e.target.value; loadInstrument(e.target.value); predecode(); renderInstStatus(); persist(); };
 $("selSound").onchange = e => {
   allNotesOff(); ui.sound=e.target.value; localSet("sound", ui.sound);
   if (ui.sound==="midi" && !midi) initMidi();
@@ -1435,7 +1550,7 @@ if (APP){
   document.querySelector(".transport").prepend(document.querySelector(".logo"));
 }
 ui.res = [1,2,4].includes(+localGet("res")) ? +localGet("res") : 2;
-syncSettings(); renderAll(); setStatus();
+syncSettings(); renderAll(); setStatus(); loadAllInstruments();
 if (APP){}
 else if (ui.sound==="midi") initMidi();
 else if (navigator.requestMIDIAccess && navigator.permissions){

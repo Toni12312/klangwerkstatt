@@ -1,5 +1,5 @@
 /* Klangwerkstatt: läuft auch ohne Internet. Version wird bei jedem Bau neu gesetzt. */
-const CACHE = "klangwerkstatt-deedf476";
+const CACHE = "klangwerkstatt-122a5cdd";
 const FILES = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
@@ -13,7 +13,8 @@ self.addEventListener("fetch", e => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
   const isFont = url.hostname === "fonts.googleapis.com" || url.hostname === "fonts.gstatic.com";
-  if (url.origin !== location.origin && !isFont) return;
+  const isSound = url.hostname === "gleitz.github.io" || url.hostname === "oramics.github.io";   /* Instrument-Aufnahmen */
+  if (url.origin !== location.origin && !isFont && !isSound) return;
   /* Erst aus dem Speicher, im Hintergrund aktualisieren */
   e.respondWith(caches.open(CACHE).then(async c => {
     const hit = await c.match(req, {ignoreSearch: true});
